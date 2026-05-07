@@ -54,7 +54,8 @@ void panic(char*);
 struct cmd *parsecmd(char*);
 
 // Execute cmd.  Never returns.
-void
+
+__attribute__((noreturn)) void
 runcmd(struct cmd *cmd)
 {
   int p[2];
@@ -159,7 +160,7 @@ main(void)
   while(getcmd(buf, sizeof(buf)) >= 0){
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
       // Chdir must be called by the parent, not the child.
-      buf[strlen(buf)-1] = 0;  // chop \n
+      buf[strlen(buf)-1] = 0;  // chop \n, gets 会把回车读进 buf
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;

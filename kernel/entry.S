@@ -12,6 +12,7 @@ _entry:
         la sp, stack0
         li a0, 1024*4
 	csrr a1, mhartid
+        # 加 1 的原因是 栈指针 sp 指向的是当前栈顶，而栈是向低地址增长的。
         addi a1, a1, 1
         mul a0, a0, a1
         add sp, sp, a0

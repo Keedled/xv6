@@ -45,7 +45,7 @@ struct trapframe {
   /*   0 */ uint64 kernel_satp;   // kernel page table
   /*   8 */ uint64 kernel_sp;     // top of process's kernel stack
   /*  16 */ uint64 kernel_trap;   // usertrap()
-  /*  24 */ uint64 epc;           // saved user program counter
+  /*  24 */ uint64 epc;           // saved user program counter 被中断的用户指令地址
   /*  32 */ uint64 kernel_hartid; // saved kernel tp
   /*  40 */ uint64 ra;
   /*  48 */ uint64 sp;
@@ -83,6 +83,11 @@ struct trapframe {
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
+/*
+  每个进程有自己的锁，粒度是 per-process。
+  这是一种细粒度锁设计 — 不是一把大锁保护所有进程，而是每个进程一把锁，减少了锁竞争。
+  操作一个进程（如 kill、exit、wait、scheduler 切换）时只需锁住当前进程，不阻塞其他进程的操作。
+*/
 struct proc {
   struct spinlock lock;
 
@@ -97,12 +102,13 @@ struct proc {
   struct proc *parent;         // Parent process
 
   // these are private to the process, so p->lock need not be held.
-  uint64 kstack;               // Virtual address of kernel stack
-  uint64 sz;                   // Size of process memory (bytes)
-  pagetable_t pagetable;       // User page table
-  struct trapframe *trapframe; // data page for trampoline.S
-  struct context context;      // swtch() here to run process
-  struct file *ofile[NOFILE];  // Open files
-  struct inode *cwd;           // Current directory
-  char name[16];               // Process name (debugging)
+  uint64 kstack;               // Virtual address of kernel stack 每个进程在内核中都有自己的内核栈，当进程陷入内核时使用。xv6 通过 proc_mapstacks() 为每个进程映射一页内核栈。
+  uint64 sz;                   // Size of process memory (bytes) 进程地址空间的大小（字节）。用户进程的虚拟地址从 0 到 sz-1。sbrk() 系统调用会修改这个值。
+  pagetable_t pagetable;       // User page table 指向进程的用户态页表。RISC-V 使用 SV39 页表，这个字段存的是根页表页的物理地址。进程切换时，内核将这个值写入 satp 寄存器来切换地址空间。
+  struct trapframe *trapframe; // data page for trampoline.S  指向 trapframe 页的指针。
+  struct context context;      // swtch() here to run process 保存内核上下文（ra、sp、callee-saved 寄存器）。
+                               //当进程从 RUNNING 切出时（调用 sched() → swtch()），当前执行状态保存在这里；当进程被调度回来重新运行时，swtch() 从这里恢复寄存器，实现上下文切换。
+  struct file *ofile[NOFILE];  // Open files  进程打开的文件表，大小为 NOFILE（通常是 16）。每个元素是一个 struct file *，文件描述符 fd 就是这个数组的索引。fd = 0/1/2 通常对应 stdin/stdout/stderr。
+  struct inode *cwd;           // Current directory 指向进程当前工作目录的 inode。chdir() 修改它，路径解析时如果路径是相对路径就从 cwd 开始查找。
+  char name[16];               // Process name (debugging) 进程名，最多 15 个字符（加 \0）。
 };

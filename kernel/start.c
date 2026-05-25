@@ -8,6 +8,7 @@ void main();
 void timerinit();
 
 // entry.S needs one stack per CPU.
+//__attribute__ ((aligned (16)))这是GCC的语法，要求后面被修饰的变量的起始地址必须是 16 的倍数
 __attribute__ ((aligned (16))) char stack0[4096 * NCPU];
 
 // a scratch area per CPU for machine-mode timer interrupts.
@@ -21,9 +22,11 @@ void
 start()
 {
   // set M Previous Privilege mode to Supervisor, for mret.
+  //它将寄存器`mstatus`中的先前特权模式设置为监管者模式
   unsigned long x = r_mstatus();
   x &= ~MSTATUS_MPP_MASK;
   x |= MSTATUS_MPP_S;
+  
   w_mstatus(x);
 
   // set M Exception Program Counter to main, for mret.
@@ -33,9 +36,10 @@ start()
   // disable paging for now.
   w_satp(0);
 
-  // delegate all interrupts and exceptions to supervisor mode.
+  // delegate(授权、把……委托给) all interrupts and exceptions to supervisor mode.
   w_medeleg(0xffff);
   w_mideleg(0xffff);
+  // 打开 Supervisor mode 下的外部中断、定时器中断和软件中断。
   w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
 
   // configure Physical Memory Protection to give supervisor mode
@@ -43,7 +47,7 @@ start()
   w_pmpaddr0(0x3fffffffffffffull);
   w_pmpcfg0(0xf);
 
-  // ask for clock interrupts.
+  // ask for clock interrupts.为当前 CPU 配置时钟中断，使系统之后能够周期性收到 timer interrupt。
   timerinit();
 
   // keep each CPU's hartid in its tp register, for cpuid().

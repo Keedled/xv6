@@ -40,6 +40,7 @@ main(void)
       // this call to wait() returns if the shell exits,
       // or if a parentless process exits.
       wpid = wait((int *) 0);
+      //这里如果wpid == pid，说明是shell退出了
       if(wpid == pid){
         // the shell exited; restart it.
         break;

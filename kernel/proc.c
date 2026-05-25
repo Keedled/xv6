@@ -211,6 +211,8 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 
 // a user program that calls exec("/init")
 // od -t xC initcode
+//这是一个用户程序，它会调用 exec("/init")。
+//下面这个数组是用 od -t xC initcode 命令把 initcode 的二进制内容转成十六进制字节得到的。
 uchar initcode[] = {
   0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02,
   0x97, 0x05, 0x00, 0x00, 0x93, 0x85, 0x35, 0x02,

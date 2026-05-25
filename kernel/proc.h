@@ -105,4 +105,10 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+
+  //trace 感觉也没有必要去持p->lock
+  uint32 traceMask;
+
+
 };

@@ -58,6 +58,7 @@ kvminit(void)
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
+//此函数执行以后，MAKE_SATP() 设置了 Sv39 模式，分页机制打开，MMU开始接管 CPU 访问的地址信息，并且将它们全部认为虚拟地址
 void
 kvminithart()
 {
@@ -77,6 +78,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+// this pagetable as parameter is a physical address of a root pagetable 
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -84,6 +86,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     panic("walk");
 
   for(int level = 2; level > 0; level--) {
+    //PX : get the index of the pte in the corresponding pagetable
     pte_t *pte = &pagetable[PX(level, va)];
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
@@ -162,6 +165,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
+// do_free 这个参数的本质是：物理页的所有权和映射是不是绑定的？ 
+// 是就一起释放（do_free=1），不是就只摘映射（do_free=0）。
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
@@ -431,4 +436,26 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void vmprint_helper(pagetable_t pagetable, int Level, char prefix[][9]){
+  for(int i = 0;i < 512;i++){
+    pte_t pte = pagetable[i];
+    //检查是否是有效的一页
+    if(pte & PTE_V){
+      uint64 pa = PTE2PA(pte);
+      printf("%s%d: pte %p pa %p\n",prefix[Level],i,pte,pa);
+      // 子叶页表项（指向下一级页表）
+      if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        vmprint_helper((pagetable_t)pa, Level + 1, prefix);
+      }
+    }
+  }
+}
+
+//Print a page table
+void vmprint(pagetable_t pagetable){
+  printf("page table %p\n",pagetable);
+  char prefix[3][9] = {"..", ".. ..", ".. .. .."};
+  vmprint_helper(pagetable, 0, prefix);
 }

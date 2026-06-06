@@ -117,7 +117,9 @@ printf(char *fmt, ...)
 void
 panic(char *s)
 {
+  
   pr.locking = 0;
+  backtrace();
   printf("panic: ");
   printf(s);
   printf("\n");
@@ -131,4 +133,29 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+//for Backtrace (moderate)
+// void 
+// backtrace(void){
+//   printf("backtrace:\n");
+//   uint64 sp = r_fp();
+  
+//   //获得这个进程的内核栈栈顶，用于停止递归
+//   struct proc* p = myproc();
+//   while(sp != p->kstack + PGSIZE){
+//     printf("%p\n",*(uint64 *)(sp - 8));
+//     sp = *(uint64 *)(sp - 16);
+
+//   }
+
+// }
+void backtrace(void){
+  printf("backtrace:\n");
+  uint64 fp = r_fp();
+  uint64 stack_top = PGROUNDUP(fp);  // 栈顶就是当前帧所在页的上界
+  while(fp < stack_top && fp > stack_top - PGSIZE){
+    printf("%p\n", *(uint64*)(fp - 8));
+    fp = *(uint64*)(fp - 16);
+  }
 }

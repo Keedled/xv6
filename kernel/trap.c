@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "syscall.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -63,10 +64,44 @@ usertrap(void)
     // an interrupt will change sstatus &c registers,
     // so don't enable until done with those registers.
     intr_on();
+    if(p->trapframe->a7 == SYS_sigreturn){
+      
+      syscall();
+      //由于syscall()更改了p->trapframe->a0作为系统调用的返回值，因此这里需要将其设置为原来的值
+      p->trapframe->a0 = p->trapframe_for_interrupt->a0;
+      //将p->is_alarm_handing = 0，代表已经从这个时钟中断处理程序中离开
+      p->is_alarm_handing = 0;
+    }
+    else {
+      syscall();
+    }
 
-    syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    /*for Alarm (hard)
+      每个时钟中断到来之后，首先检查一下alarm是否开启，如果开启,执行后续操作：
+        alarm_remaning--,然后在这里检查一下alarm_remaining是否为 0
+        如果为0，就重新装填一下alarm_remaining的值，然后回到用户态调用p->alarm_handler处理函数
+        这里还需要检查一个标记位，用于查看是否在一个alarm_handler处理程序中
+    */
+
+   if(which_dev == 2 && p->alarm_interval != 0 && p->is_alarm_handing == 0){
+      p->alarm_remained--;
+      if(p->alarm_remained == 0){
+
+        //保存一下当前用户寄存器的值，然后在sigreturn中重置回去
+        memmove(p->trapframe_for_interrupt,p->trapframe,PGSIZE);        
+
+        p->trapframe->epc = p->alarm_handler;
+        p->alarm_remained = p->alarm_interval;
+
+        //这里再标记一下p->is_alarm_handing = 1,代表它在一个中断的处理过程中
+        p->is_alarm_handing = 1;
+      }
+   }
+
+
+
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

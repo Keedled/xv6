@@ -55,6 +55,8 @@ sys_sbrk(void)
 uint64
 sys_sleep(void)
 {
+
+  backtrace();
   int n;
   uint ticks0;
 
@@ -94,4 +96,25 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+//for Alarm (hard)
+uint64 
+sys_sigalarm(void){
+  
+  struct proc *p = myproc();
+  argint(0,&p->alarm_interval);
+  p->alarm_remained = p->alarm_interval;
+  argaddr(1,&(p->alarm_handler));
+  
+  return 0;
+  
+}
+
+uint64 
+sys_sigreturn(void){
+  //将用户页表重置回去
+  struct proc *p = myproc();
+  memmove(p->trapframe,p->trapframe_for_interrupt,PGSIZE); 
+  return 0;
 }

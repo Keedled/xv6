@@ -10,6 +10,23 @@
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
+int should_free(uint64 pa);
+
+//for cow fork
+#define NPHYPAGES ((PHYSTOP - KERNBASE) / PGSIZE)
+
+struct {
+  struct spinlock lock;
+  int cnt[NPHYPAGES];
+} ref;
+
+static int
+pa2idx(uint64 pa)
+{
+  if(pa < KERNBASE || pa >= PHYSTOP || pa % PGSIZE)
+    panic("pa2idx");
+  return (pa - KERNBASE) / PGSIZE;
+}
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -27,16 +44,25 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  //这里顺便初始化一下ref的锁的名字
+  initlock(&ref.lock,"ref");
   freerange(end, (void*)PHYSTOP);
 }
+
 
 void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    //acquire(&ref.lock);
+    ref.cnt[pa2idx((uint64)p)] ++;
+    //release(&ref.lock);
     kfree(p);
+  }
+  
 }
 
 // Free the page of physical memory pointed at by v,
@@ -50,6 +76,13 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  //for COW fork
+
+  if(!should_free((uint64)pa)){
+    //说明还有别的地方在使用它，不要直接将其释放到freelist
+    return ;
+  }
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -77,6 +110,57 @@ kalloc(void)
   release(&kmem.lock);
 
   if(r)
+  {  
     memset((char*)r, 5, PGSIZE); // fill with junk
+    add_ref(r);
+  }
   return (void*)r;
+}
+
+int 
+ref_cnt(void *pa){
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+      panic("add_ref");
+    acquire(&ref.lock);
+    int cunt = ref.cnt[pa2idx((uint64)pa)];
+    release(&ref.lock);
+    return cunt;
+}
+
+void
+add_ref(void *pa){
+    if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+      panic("add_ref");
+    acquire(&ref.lock);
+    ref.cnt[pa2idx((uint64)pa)] ++;
+    release(&ref.lock);
+}
+
+void
+sub_ref(void *pa){
+    if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+      panic("sub_ref");
+    acquire(&ref.lock);
+    ref.cnt[pa2idx((uint64)pa)] --;
+    release(&ref.lock);
+}
+
+int 
+should_free(uint64 pa){
+    if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+      panic("should_free");
+
+    if(ref.cnt[pa2idx((uint64)pa)] < 1)
+      panic("kfree ref");
+      
+    int count;
+    acquire(&ref.lock);
+    count  = -- ref.cnt[pa2idx((uint64)pa)];
+    release(&ref.lock);
+
+
+    
+
+    return count == 0;
+
 }

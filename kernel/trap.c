@@ -65,9 +65,43 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == 15) {
+    //for pagefault
+    uint64 va = r_stval();
+    uint64 va0 = PGROUNDDOWN(va);
+
+    if(va >= p->sz || va >= MAXVA){
+      p->killed = 1;
+    } else {
+      pte_t *pte = walk(p->pagetable, va0, 0);
+
+      if(pte == 0 || (*pte & PTE_V) == 0){
+        // 未映射页
+        // 如果你实现 lazy allocation，这里可以分配新页
+        // 如果没实现 lazy allocation，这就是非法访问，kill
+        p->killed = 1;
+      } else if((*pte & PTE_U) == 0){
+        // 不是用户页，比如 guard page
+        p->killed = 1;
+      } else if((*pte & PTE_COW) != 0){
+        // COW 页：分配新页，复制旧页，更新 PTE 为可写
+        if(cow_alloc(va0) != 0){
+          p->killed = 1;
+        }
+      } else if((*pte & PTE_W) == 0){
+        // 普通只读页，比如代码段/text page
+        // 这不是 COW，不能修复，应该 kill
+        p->killed = 1;
+      } else {
+        // 理论上不太应该走到这里
+        p->killed = 1;
+      }
+    }
+  } 
+  else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -218,3 +252,26 @@ devintr()
   }
 }
 
+//for cow fork
+
+int
+cow_alloc(uint64 va){
+  struct proc *p = myproc();
+  uint64 pa = walkaddr(p->pagetable,va);
+  //首先检查一下对应的物理页的引用计数，如果是1直接将对应的PTE设置为可写，然后将COW位置为0即可
+  if(ref_cnt((void*)pa) == 1){
+    pte_t *pte = walk(p->pagetable, va, 0);
+    *pte = (*pte & ~PTE_RSW_MASK) | PTE_W;
+  }
+  else {
+    //如果不为1，那申请一个新的物理页面，然后进行映射,关闭COW位，打开W位，然后将原物理页面对应的索引减小1
+    uint64 mem = (uint64)kalloc();
+    if(mem == 0)return -1;
+    memmove((void*)mem, (void*)pa, PGSIZE);
+    pte_t *pte = walk(p->pagetable, va, 0);
+    *pte = PA2PTE(mem) | ((PTE_FLAGS(*pte) & ~PTE_RSW_MASK) | PTE_W);
+    sub_ref((void*)pa);
+  }
+  sfence_vma();
+  return 0;
+}

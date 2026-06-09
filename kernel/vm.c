@@ -6,6 +6,7 @@
 #include "defs.h"
 #include "fs.h"
 
+
 /*
  * the kernel's page table.
  */
@@ -303,7 +304,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -311,13 +311,32 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    
+    
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    //for cow fork
+    if(flags & PTE_W)
+    {
+      // 原来可写 → 新标记为 COW，共享
+      flags = (flags & ~PTE_W) | PTE_COW;
+      *pte = PA2PTE(pa) | flags;
+      if(mappages(new, i, PGSIZE, pa, flags) != 0)
+        goto err;
+      add_ref((void*)pa);
+    }
+    else if(flags & PTE_COW)
+    {
+      // 已经是 COW → 直接共享，再加一个引用
+      if(mappages(new, i, PGSIZE, pa, flags) != 0)
+        goto err;
+      add_ref((void*)pa);
+    }
+    else
+    {
+      // 纯只读页（text段等）→ 也可以直接共享，不需要拷贝
+      if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
+        goto err;
+      add_ref((void*)pa);
     }
   }
   return 0;
@@ -347,12 +366,37 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  pte_t *pte;
   while(len > 0){
-    va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(dstva >= MAXVA)
       return -1;
+    va0 = PGROUNDDOWN(dstva);
+    pte = walk(pagetable,va0,0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0){
+      return -1;
+    }
+    if((*pte & PTE_COW) != 0){
+      if(ref_cnt((void*)PTE2PA(*pte)) == 1){
+        *pte = (*pte & ~PTE_RSW_MASK) | PTE_W;
+        pa0 = PTE2PA(*pte);
+      }
+      else {
+        
+        pa0 = (uint64)kalloc();
+        if(pa0 == 0)
+          return -1;
+        
+        memmove((void*)pa0, (void*)PTE2PA(*pte), PGSIZE);
+        sub_ref((void*)PTE2PA(*pte));
+        *pte = PA2PTE(pa0) | ((PTE_FLAGS(*pte) & ~PTE_RSW_MASK) | PTE_W);
+      }
+    }
+    else {
+      pa0 = walkaddr(pagetable, va0);  
+      if(pa0 == 0)
+        return -1;
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

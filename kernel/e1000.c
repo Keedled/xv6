@@ -93,28 +93,59 @@ e1000_init(uint32 *xregs)
 }
 
 int
-e1000_transmit(struct mbuf *m)
+ e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
+  acquire(&e1000_lock);
+
+  uint32 idx = regs[E1000_TDT];
+
+  if((tx_ring[idx].status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_mbufs[idx]){
+    mbuffree(tx_mbufs[idx]);
+    tx_mbufs[idx] = 0;
+  }
+
+  tx_ring[idx].addr = (uint64)m->head;
+  tx_ring[idx].length = m->len;
+  tx_ring[idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[idx].status = 0;
+
+  tx_mbufs[idx] = m;
+
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  while(1){
+    uint32 idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+    if((rx_ring[idx].status & E1000_RXD_STAT_DD) == 0)
+      break;
+
+    struct mbuf *m = rx_mbufs[idx];
+    m->len = rx_ring[idx].length;
+
+    struct mbuf *new_m = mbufalloc(0);
+    if(new_m == 0)
+      panic("e1000_recv");
+
+    rx_mbufs[idx] = new_m;
+    rx_ring[idx].addr = (uint64)new_m->head;
+    rx_ring[idx].status = 0;
+
+    regs[E1000_RDT] = idx;
+
+    net_rx(m);
+  }
 }
 
 void

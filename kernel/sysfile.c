@@ -484,3 +484,153 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  struct proc *p = myproc();
+  struct file *f;
+  int length, prot, flags, fd, offset;
+  uint64 addr;
+
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(1, &length) < 0)
+    return -1;
+  if(argint(2, &prot) < 0)
+    return -1;
+  if(argint(3, &flags) < 0)
+    return -1;
+  if(argfd(4, &fd, &f) < 0)
+    return -1;
+  if(argint(5, &offset) < 0)
+    return -1;
+
+  if(length <= 0)
+    return -1;
+  if(offset % PGSIZE)
+    return -1;
+  if((flags & (MAP_SHARED | MAP_PRIVATE)) == 0)
+    return -1;
+  if((flags & (MAP_SHARED | MAP_PRIVATE)) == (MAP_SHARED | MAP_PRIVATE))
+    return -1;
+  if((prot & PROT_READ) && !f->readable)
+    return -1;
+  if((prot & PROT_WRITE) && (flags & MAP_SHARED) && !f->writable)
+    return -1;
+
+  int i;
+  for(i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used)
+      break;
+  }
+
+  if(i == NVMA)
+    return -1;
+
+  uint64 len = PGROUNDUP(length);
+  uint64 va = PGROUNDUP(p->sz);
+  for(int j = 0; j < NVMA; j++){
+    if(p->vmas[j].used && p->vmas[j].addr + p->vmas[j].length > va)
+      va = p->vmas[j].addr + p->vmas[j].length;
+  }
+  va = PGROUNDUP(va);
+  if(va + len < va || va + len >= MAXVA)
+    return -1;
+
+  p->vmas[i].used = 1;
+  p->vmas[i].addr = va;
+  p->vmas[i].length = len;
+  p->vmas[i].prot = prot;
+  p->vmas[i].flags = flags;
+  p->vmas[i].file = filedup(f);
+  p->vmas[i].offset = offset;
+
+  return va;
+}
+
+static int
+do_munmap(struct proc *p, uint64 addr, uint64 length)
+{
+  int i;
+
+  if(addr % PGSIZE != 0)
+    return -1;
+  length = PGROUNDUP(length);
+  if(length == 0)
+    return -1;
+
+  for(i = 0; i < NVMA; i++){
+    if(!p->vmas[i].used)
+      continue;
+    if(p->vmas[i].addr <= addr && addr < p->vmas[i].addr + p->vmas[i].length)
+      break;
+  }
+  if(i == NVMA)
+    return -1;
+
+  struct vma *vma = &p->vmas[i];
+  if(addr < vma->addr || addr + length > vma->addr + vma->length)
+    return -1;
+  if(addr != vma->addr && addr + length != vma->addr + vma->length)
+    return -1;
+
+  for(uint64 va = addr; va < addr + length; va += PGSIZE){
+    if(walkaddr(p->pagetable, va) == 0)
+      continue;
+
+    if(vma->flags & MAP_SHARED){
+      struct inode *ip = vma->file->ip;
+      uint n = PGSIZE;
+      if(va + n > vma->addr + vma->length)
+        n = vma->addr + vma->length - va;
+      begin_op();
+      ilock(ip);
+      writei(ip, 1, va, vma->offset + va - vma->addr, n);
+      iunlock(ip);
+      end_op();
+    }
+    uvmunmap(p->pagetable, va, 1, 1);
+  }
+
+  uint64 vma_start = vma->addr;
+  uint64 vma_end = vma->addr + vma->length;
+  uint64 unmap_end = addr + length;
+
+  if(addr == vma_start && unmap_end == vma_end){
+    fileclose(vma->file);
+    memset(vma, 0, sizeof(*vma));
+  } else if(addr == vma_start){
+    vma->addr = unmap_end;
+    vma->length = vma_end - unmap_end;
+    vma->offset += length;
+  } else {
+    vma->length = addr - vma_start;
+  }
+
+  return 0;
+}
+
+void
+mmapunmapall(struct proc *p)
+{
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used)
+      do_munmap(p, p->vmas[i].addr, p->vmas[i].length);
+  }
+}
+
+uint64
+sys_munmap(void)
+{
+  struct proc *p = myproc();
+  uint64 addr;
+  int length;
+
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(1, &length) < 0 || length <= 0)
+    return -1;
+
+  return do_munmap(p, addr, length);
+}

@@ -6,6 +6,12 @@
 #include "proc.h"
 #include "defs.h"
 
+#include "fs.h"
+#include "sleeplock.h"
+
+#include "file.h"
+#include "fcntl.h"
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -65,7 +71,59 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == 12 || r_scause() == 13 || r_scause() == 15) {
+    // 12 = instruction page fault, 13 = load page fault, 15 = store/AMO page fault.
+    uint64 fault_address = r_stval();
+    uint64 page_address = PGROUNDDOWN(fault_address);
+    char *mem;
+    struct inode *ip;
+    int i, perm;
+
+    for(i = 0; i < NVMA; i++){
+      if(!p->vmas[i].used)
+        continue;
+      if(p->vmas[i].addr <= fault_address && fault_address < p->vmas[i].addr + p->vmas[i].length)
+        break;
+    }
+
+    if(i == NVMA){
+      p->killed = 1;
+    } else if(r_scause() == 15 && (p->vmas[i].prot & PROT_WRITE) == 0){
+      p->killed = 1;
+    } else if(r_scause() == 13 && (p->vmas[i].prot & PROT_READ) == 0){
+      p->killed = 1;
+    } else if(r_scause() == 12 && (p->vmas[i].prot & PROT_EXEC) == 0){
+      p->killed = 1;
+    } else if((mem = kalloc()) == 0){
+      p->killed = 1;
+    } else {
+      memset(mem, 0, PGSIZE);
+
+      ip = p->vmas[i].file->ip;
+      ilock(ip);
+      if(readi(ip, 0, (uint64)mem, p->vmas[i].offset + page_address - p->vmas[i].addr, PGSIZE) < 0){
+        iunlock(ip);
+        kfree(mem);
+        p->killed = 1;
+      } else {
+        iunlock(ip);
+
+        perm = PTE_U;
+        if(p->vmas[i].prot & PROT_READ)
+          perm |= PTE_R;
+        if(p->vmas[i].prot & PROT_WRITE)
+          perm |= PTE_W | PTE_R;
+        if(p->vmas[i].prot & PROT_EXEC)
+          perm |= PTE_X;
+
+        if(mappages(p->pagetable, page_address, PGSIZE, (uint64)mem, perm) < 0){
+          kfree(mem);
+          p->killed = 1;
+        }
+      }
+    }
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
